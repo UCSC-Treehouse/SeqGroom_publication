@@ -1,0 +1,102 @@
+---
+title: "`r gsub('.Rmd', ' ', gsub('_', ' ', knitr::current_input()))`"
+author: "Holly Beale"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: true
+  # pdf_document: default
+  # fig_caption: yes
+---
+
+```{r}
+
+library(tidyverse)
+library(forcats)
+library(knitr)
+library(stringi)
+
+
+```
+
+# 
+```{r}
+metrics_to_extract <- c("fastq R1 linecount", 
+  "fastq R2 linecount",
+  "fastq R1 md5sum", 
+  "fastq R2 md5sum", 
+  "kallisto results md5sum",
+  "rsem results md5sum",
+  "cutadapt R1 linecount",
+  "cutadapt R2 linecount",
+  "cutadapt R1 md5sum",
+  "cutadapt R2 md5sum",
+  "rsem results md5sum",
+  "star bam md5sum")
+
+branches_analzyed <-  c("^ungroomed", "^sorted", "^groomed")
+measureable_values <- c("linecount", "md5sum")
+
+
+```
+
+
+```{r}
+
+data_dir <-  "~/Downloads/seqgroom-jackie-holly/"
+
+summary_logs <-  list.files(data_dir, pattern=".*-SUMMARY.log", recursive = TRUE)
+
+logged_measurements <- lapply(summary_logs, function(log_name) {
+  # log_name <- summary_logs[1]
+  log_contents_raw <- tibble(
+    file_name = log_name,
+    sample_name = gsub("-SUMMARY.log", "", basename(file_name)),
+    full_line = scan(paste0(data_dir, log_name), what="list", sep="\n")
+  ) %>%
+    filter(grepl(paste(metrics_to_extract, collapse="|"), full_line))
+  log_contents_raw %>%
+    mutate(
+      #      date_stamp = gsub("2019 .*$", "2019", full_line)
+      measurement = gsub("^.*2019 ", "", full_line),
+      #      value = gsub("^.*: ([a-z0-9]*) .*$", "\\1", full_line),
+      measurement_name = gsub(":.*$", "", measurement),
+      value = gsub("[[:space:]] .*", "", gsub("^.*:", "",full_line))
+    ) %>%
+    rowwise %>%
+    mutate(
+      value_measured = measureable_values[stri_detect_fixed(measurement_name, measureable_values)],
+      analysis_branch = gsub("\\^", 
+                             "",
+                             branches_analzyed
+                             [stri_detect_regex(measurement_name, branches_analzyed)]
+      ),
+      output_measured = gsub(analysis_branch, "", gsub(value_measured, "", measurement_name))
+    ) %>% select(sample_name, analysis_branch, output_measured, value_measured, value)
+}) %>% bind_rows
+
+logged_measurements %>% group_by(sample_name, output_measured, value_measured,) %>%
+  summarize(distinct_values = length(unique(value)))
+
+logged_measurements %>% filter(grepl("cutadapt R1", output_measured),
+                               value_measured == "linecount",
+                               sample_name == "CCLE_BLCA")
+
+```
+
+# Line count plots
+```{r}
+cutadapt_linecounts <- logged_measurements %>% filter(grepl("cutadapt R1", output_measured),
+                               value_measured == "linecount")
+
+cutadapt_linecounts$analysis_branch <- factor(cutadapt_linecounts$analysis_branch, levels =  c("ungroomed", "sorted", "groomed"))
+
+
+ggplot(cutadapt_linecounts) + geom_point(aes(x=analysis_branch, y=as.numeric(value), color = analysis_branch)) + facet_wrap(~sample_name, nrow=1)  +
+  theme(axis.text.x = element_blank()) +
+ theme(strip.text.x = element_text(angle = 90))
+
+
+```
+
+
