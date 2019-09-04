@@ -3,9 +3,9 @@ title: "`r gsub('.Rmd', ' ', gsub('_', ' ', knitr::current_input()))`"
 author: "Holly Beale"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
-  html_document:
+   html_document:
     toc: true
-  # pdf_document: default
+#  pdf_document: default
   # fig_caption: yes
 ---
 
@@ -31,7 +31,6 @@ metrics_to_extract <- c("fastq R1 linecount",
   "cutadapt R2 linecount",
   "cutadapt R1 md5sum",
   "cutadapt R2 md5sum",
-  "rsem results md5sum",
   "star bam md5sum")
 
 branches_analzyed <-  c("^ungroomed", "^sorted", "^groomed")
@@ -52,14 +51,14 @@ logged_measurements <- lapply(summary_logs, function(log_name) {
   log_contents_raw <- tibble(
     file_name = log_name,
     sample_name = gsub("-SUMMARY.log", "", basename(file_name)),
-    full_line = scan(paste0(data_dir, log_name), what="list", sep="\n")
+    original_sequence_format = gsub("/.*", "", file_name),
+    full_line = scan(paste0(data_dir, log_name), what="list", sep="\n"),
+    sample_and_format = paste0(sample_name, " (", original_sequence_format, ")")
   ) %>%
     filter(grepl(paste(metrics_to_extract, collapse="|"), full_line))
   log_contents_raw %>%
     mutate(
-      #      date_stamp = gsub("2019 .*$", "2019", full_line)
       measurement = gsub("^.*2019 ", "", full_line),
-      #      value = gsub("^.*: ([a-z0-9]*) .*$", "\\1", full_line),
       measurement_name = gsub(":.*$", "", measurement),
       value = gsub("[[:space:]] .*", "", gsub("^.*:", "",full_line))
     ) %>%
@@ -72,31 +71,119 @@ logged_measurements <- lapply(summary_logs, function(log_name) {
                              [stri_detect_regex(measurement_name, branches_analzyed)]
       ),
       output_measured = gsub(analysis_branch, "", gsub(value_measured, "", measurement_name))
-    ) %>% select(sample_name, analysis_branch, output_measured, value_measured, value)
+    ) %>% select(sample_name, original_sequence_format, analysis_branch, output_measured, value_measured, value, sample_and_format)
 }) %>% bind_rows
 
-logged_measurements %>% group_by(sample_name, output_measured, value_measured,) %>%
-  summarize(distinct_values = length(unique(value)))
+# logged_measurements %>% group_by(sample_name, output_measured, value_measured,) %>%
+#   summarize(distinct_values = length(unique(value)))
+# 
+# logged_measurements %>% filter(grepl("cutadapt R1", output_measured),
+#                                value_measured == "linecount",
+#                                sample_name == "CCLE_BLCA")
 
-logged_measurements %>% filter(grepl("cutadapt R1", output_measured),
-                               value_measured == "linecount",
-                               sample_name == "CCLE_BLCA")
+
+common_values <- logged_measurements %>% 
+  group_by(sample_name, output_measured, value_measured) %>%
+  count(value) %>%
+  slice(which.max(n)) %>%
+  filter(n>1) %>%
+  mutate(identical_within_sample_and_output = TRUE) 
+
+
+logged_measurements <- logged_measurements %>% left_join(common_values %>% select(-n)) %>%
+  mutate(identical_within_sample_and_output = ifelse(
+    is.na(identical_within_sample_and_output), 
+    FALSE,
+    ifelse(identical_within_sample_and_output,
+           TRUE,
+           NA)))
+
+
+```
+# Fastq line counts
+
+
+```{r}
+
+
+
+fastq_linecounts <- logged_measurements %>% filter(grepl("fastq R1", output_measured),
+                               value_measured == "linecount") %>%
+  mutate(value = as.numeric(value))
+
+fastq_linecounts$analysis_branch <- factor(fastq_linecounts$analysis_branch, levels =  c("ungroomed", "sorted", "groomed"))
+
+
+ggplot(fastq_linecounts) + 
+  geom_point(aes(x=analysis_branch, y=value, 
+                 color = analysis_branch,
+                 shape=identical_within_sample_and_output)
+  ) + facet_wrap(~sample_and_format, nrow=1)  +
+  theme(axis.text.x = element_blank()) +
+  theme(strip.text.x = element_text(angle = 90)) + 
+  scale_color_brewer(palette = "Set1") + 
+  ggtitle("This plot shows line counts of R1 fastq before cutadapt")
+
+
+# are none of the THR09_0222 values identical? No, they are not
+# subset(cutadapt_linecounts, grepl("0222", sample_name))
 
 ```
 
+
+
 # Line count plots
 ```{r}
+
+
+
 cutadapt_linecounts <- logged_measurements %>% filter(grepl("cutadapt R1", output_measured),
-                               value_measured == "linecount")
+                               value_measured == "linecount") %>%
+  mutate(value = as.numeric(value))
 
 cutadapt_linecounts$analysis_branch <- factor(cutadapt_linecounts$analysis_branch, levels =  c("ungroomed", "sorted", "groomed"))
 
 
-ggplot(cutadapt_linecounts) + geom_point(aes(x=analysis_branch, y=as.numeric(value), color = analysis_branch)) + facet_wrap(~sample_name, nrow=1)  +
+ggplot(cutadapt_linecounts) + 
+  geom_point(aes(x=analysis_branch, y=value, 
+                 color = analysis_branch,
+                 shape=identical_within_sample_and_output)
+  ) + facet_wrap(~sample_and_format, nrow=1)  +
   theme(axis.text.x = element_blank()) +
- theme(strip.text.x = element_text(angle = 90))
+  theme(strip.text.x = element_text(angle = 90)) + 
+  scale_color_brewer(palette = "Set1")
 
+
+# are none of the THR09_0222 values identical? No, they are not
+# subset(cutadapt_linecounts, grepl("0222", sample_name))
 
 ```
 
+# Gene expression quantification outputs
+```{r}
+
+kalliso_quantifications <- logged_measurements %>% 
+  filter(value_measured == "md5sum",
+         grepl("results", output_measured)
+  ) %>% mutate(quant_tool = gsub(" results", "", output_measured))
+         
+expr_quant_plot <- kalliso_quantifications %>% 
+  select(sample_and_format, quant_tool, analysis_branch, 
+         identical_within_sample_and_output, original_sequence_format) %>%
+  gather(key, value, 
+         -sample_and_format, -analysis_branch, -quant_tool, -original_sequence_format) %>%
+  mutate(analysis_branch = factor(analysis_branch, 
+                                   levels =  c("ungroomed", "sorted", "groomed")))
+
+ggplot(expr_quant_plot) + 
+  geom_tile(aes(y=sample_and_format, fill=value, x=analysis_branch)) +
+  facet_grid(original_sequence_format~quant_tool, 
+             scales="free", space="free") +
+#  theme(axis.text.x = element_blank()) +
+  scale_fill_brewer("Identical", palette = "Set1")
+
+
+         
+# View(expr_quant_plot)
+```
 
